@@ -1,0 +1,36 @@
+[project]
+name = "shelvez"
+dynamic = ["version"]
+description = "A lightweight Python package providing shelve-like persistent storage with zstd compression, SQLite transactions, multithreading support, and flexible serialization options."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.11.4",
+    "zstandard>=0.23.0",
+]
+
+[build-system]
+requires = ["hatchling >= 1.26"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
+
+[tool.hatch.version]
+path = "shelvez/__init__.py"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+]
+
+[tool.ruff]
+line-length = 128
+target-version = "py313"
+
+[tool.ruff.lint]
+ignore = ["F401"]
