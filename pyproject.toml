@@ -26,6 +26,7 @@ path = "shelvez/__init__.py"
 [dependency-groups]
 dev = [
     "pytest>=8.3.5",
+    "pytest-benchmark>=5.1.0",
 ]
 
 [tool.ruff]

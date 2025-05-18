@@ -9,13 +9,34 @@ This package functions similarly to Python’s built-in `shelve` but offers addi
 
 ---
 
-## Features
+## 📊 Benchmark
+> Benchmark functions are defined in `tests/test_shelve.py`.
 
-- Transparent compression using zstd  
-- Atomic transactions with SQLite  
-- Flexible serialization: choose between JSON, Pickle, or Pydantic serialization  
-- Safe concurrent read/write operations in multithreaded environments  
-- Easy-to-use API similar to Python's built-in `shelve`  
+### 🔥 Performance Comparison
+
+| Test Case                 | Min (ms) | Max (ms) | Mean (ms) | StdDev (ms) | Median (ms) | OPS (ops/sec) | Rounds |
+|--------------------------|----------|----------|-----------|-------------|-------------|----------------|--------|
+| `shelve_speed`           | 443.62   | 459.37   | 450.19    | 5.96        | 450.10      | 2.22           | 5      |
+| `shelvez_pickle_speed`   | 237.18   | 243.08   | 240.01    | 2.54        | 239.53      | 4.17           | 5      |
+| `shelvez_pydantic_speed` | 245.33   | 318.90   | 263.59    | 31.14       | 252.38      | 3.79           | 5      |
+| `shelvez_json_speed`     | 246.83   | 250.72   | 249.37    | 1.57        | 249.44      | 4.01           | 5      |
+
+> OPS = Operations Per Second (calculated as 1 / Mean)
+
+---
+
+### 🗂️ Database Size Comparison
+
+> File sizes are measured after writing the same number key-value data using each backend. 
+
+| Backend                 | File Size |
+|-------------------------|-----------|
+| `shelve`                | 380.00 kB |
+| `shelvez` (Pickle)      | 312.00 kB |
+| `shelvez` (JSON)        | 312.00 kB |
+| `shelvez` (Pydantic)    | 308.00 kB |
+
+> Smaller database files and faster write performance make `shelvez` a more efficient alternative to the standard `shelve` module.
 
 ---
 

@@ -20,11 +20,6 @@ class _ClosedDict(collections.abc.MutableMapping):
         return "<Closed Dictionary>"
 
 
-unserialize = partial(json.loads)
-json_dumps = partial(json.dumps, indent=None, ensure_ascii=False, separators=(",", ":"))
-serialize = lambda obj: json_dumps(obj).encode("utf-8")  # noqa: E731
-
-
 class Shelf(collections.abc.MutableMapping):
     """Base class for shelf implementations.
 
