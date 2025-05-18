@@ -50,7 +50,7 @@ pip install shelvez
 ## Base Usage
 
 ```python
-import shelve_sqlite_zstd as shelve
+import shelvez as shelve
 
 db = shelve.open("any_db_path/your_db.db")
 db["key"] = "value"
@@ -65,7 +65,7 @@ The default serialization method uses Pickle, with the Pickle data further compr
 ---
 ### with JSON-serializable dicts
 ```python
-import shelve_sqlite_zstd as shelve
+import shelvez as shelve
 
 # Use Json serializer
 serializer = shelve.serializer.JsonSerializer()
@@ -77,7 +77,7 @@ db["key"] = {"key":"value"}
 ### with Pydantic model
 ```python
 from pydantic import BaseModel
-import shelve_sqlite_zstd as shelve
+import shelvez as shelve
 
 class MyModel(BaseModel):
     value: str
@@ -96,7 +96,7 @@ To implement your own serialization method, you need to create a subclass of ser
   
 Here is a template example:
 ```python
-from shelve_sqlite_zstd import serializer
+from shelvez import serializer
 
 class CustomSerializer(serializer.BaseSerializer):
     def serialize(self, obj) -> bytes:
@@ -119,7 +119,7 @@ Typically, generating the dictionary after storing a few thousand samples yields
 ⚠️ Warning: During the optimization process, do not perform any other read or write operations on the database to prevent data corruption or inconsistent states.
 
 ```python
-import shelve_sqlite_zstd as shelve
+import shelvez as shelve
 
 db = shelve.open("any_db_path/your_db.db")
 db["key"] = "value"
