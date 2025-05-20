@@ -3,9 +3,9 @@
 
 This package functions similarly to Python’s built-in `shelve` but offers additional features such as:
 
-- **Zstandard (zstd) compression** for efficient storage  ✅ DONE  
-- **SQLite-backed transactions** to ensure data integrity  ⚠️ TODO  
-- **Multiple serialization formats support**: JSON, Pickle, and Pydantic models  ✅ DONE  
+- **Zstandard (zstd) compression** for efficient storage  ✅ DONE
+- **SQLite-backed transactions** to ensure data integrity  ⚠️ TODO
+- **Multiple serialization formats support**: JSON, Pickle, and Pydantic models  ✅ DONE
 
 ---
 
@@ -27,7 +27,7 @@ This package functions similarly to Python’s built-in `shelve` but offers addi
 
 ### 🗂️ Database Size Comparison
 
-> File sizes are measured after writing the same number key-value data using each backend. 
+> File sizes are measured after writing the same number key-value data using each backend.
 
 | Backend                 | File Size |
 |-------------------------|-----------|
@@ -90,10 +90,10 @@ db["key"] = MyModel(value="value")
 ```
 ---
 ### with Self Custom Serialization
-To implement your own serialization method, you need to create a subclass of serializer.BaseSerializer and override the following two methods:  
-1. `serialize(self, obj) -> bytes`: This method takes a Python object (obj) and returns its serialized form as bytes. Implement this method with your custom serialization logic.  
+To implement your own serialization method, you need to create a subclass of serializer.BaseSerializer and override the following two methods:
+1. `serialize(self, obj) -> bytes`: This method takes a Python object (obj) and returns its serialized form as bytes. Implement this method with your custom serialization logic.
 2. `unserialize(self, data: bytes)`: This method takes the serialized bytes (data) and returns the original Python object by deserializing it.
-  
+
 Here is a template example:
 ```python
 from shelvez import serializer
