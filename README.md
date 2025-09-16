@@ -1,11 +1,12 @@
 # Introduction
 [![PyPI](https://img.shields.io/pypi/v/shelvez.svg?color=blue)](https://pypi.org/project/shelvez/#history)
 
-This package functions similarly to Python’s built-in `shelve` but offers additional features such as:
+This package functions similarly to Python's built-in `shelve` but offers additional features such as:
 
 - **Zstandard (zstd) compression** for efficient storage  ✅ DONE
 - **SQLite-backed transactions** to ensure data integrity  ⚠️ TODO
 - **Multiple serialization formats support**: JSON, Pickle, and Pydantic models  ✅ DONE
+- **Disk-based function caching** with TTL and LRU strategies  ✅ DONE
 
 ---
 
@@ -130,4 +131,96 @@ db.dict.optimize_database()
 
 db.close()
 ```
+
+---
+
+## Function Caching with DiskCache
+
+Shelvez now includes a powerful disk-based caching system that allows you to cache function results to SQLite with compression. This is particularly useful for expensive computations that you want to persist across application restarts.
+
+### Basic Usage
+
+```python
+import shelvez.diskcache as diskcache
+import time
+
+# TTL Cache - cache results for 1 hour
+@diskcache.ttl_cache(cache_path="cache.db", max_size=1000, ttl=3600)
+def expensive_function(x):
+    time.sleep(1)  # Simulate expensive computation
+    return x * x
+
+# First call - computes and caches
+result = expensive_function(5)  # Takes 1 second
+print(result)  # 25
+
+# Second call - retrieves from cache
+result = expensive_function(5)  # Instant!
+print(result)  # 25
+```
+
+### LRU Cache
+
+```python
+# LRU Cache - keeps only the 100 most recently used results
+@diskcache.lru_cache(cache_path="cache.db", max_size=100)
+def fibonacci(n):
+    if n <= 1:
+        return n
+    return fibonacci(n-1) + fibonacci(n-2)
+
+# Results are cached and persist across application restarts
+result = fibonacci(30)  # Computed once, cached forever
+```
+
+### Custom Cache Configuration
+
+```python
+# Custom cache with specific settings
+@diskcache.diskcache(
+    cache_path="my_cache.db",
+    max_size=500,
+    ttl=1800,  # 30 minutes
+    cache_type="ttl"  # or "lru"
+)
+def my_function(x, y):
+    return x + y
+```
+
+### Cache Management
+
+```python
+# Create a cache instance for advanced management
+cache = diskcache.DiskCache(
+    cache_path="advanced_cache.db",
+    max_size=1000,
+    ttl=3600,
+    cache_type="ttl"
+)
+
+@cache
+def my_function(x):
+    return x * 2
+
+# Get cache statistics
+stats = cache.get_stats()
+print(f"Cache items: {stats['disk_cache']['total_items']}")
+print(f"Memory cache size: {stats['memory_cache_size']}")
+
+# Clear all cached data
+cache.clear()
+
+# Close the cache
+cache.close()
+```
+
+### Features
+
+- **Dual-layer caching**: Memory cache for speed + disk cache for persistence
+- **Compression**: All cached data is compressed using zstd for efficient storage
+- **Thread-safe**: Safe to use in multi-threaded applications
+- **Automatic cleanup**: TTL caches automatically expire old entries, LRU caches remove least recently used items
+- **Flexible serialization**: Supports any Python object that can be pickled
+- **Statistics**: Get detailed information about cache usage and performance
+
 ---
