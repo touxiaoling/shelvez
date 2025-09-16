@@ -1,6 +1,7 @@
 from .shelve import open
 from . import serialer
+from . import diskcache
 
-__all__ = ["open", "serialer"]
+__all__ = ["open", "serialer", "diskcache"]
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
