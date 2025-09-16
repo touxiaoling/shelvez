@@ -6,7 +6,7 @@ This package functions similarly to Python's built-in `shelve` but offers additi
 - **Zstandard (zstd) compression** for efficient storage  ✅ DONE
 - **SQLite-backed transactions** to ensure data integrity  ⚠️ TODO
 - **Multiple serialization formats support**: JSON, Pickle, and Pydantic models  ✅ DONE
-- **Disk-based function caching** with TTL and LRU strategies  ✅ DONE
+- **SQLite-based function caching** with TTL and LRU strategies  ✅ DONE
 
 ---
 
@@ -134,18 +134,18 @@ db.close()
 
 ---
 
-## Function Caching with DiskCache
+## Function Caching with SqlCache
 
-Shelvez now includes a powerful disk-based caching system that allows you to cache function results to SQLite with compression. This is particularly useful for expensive computations that you want to persist across application restarts.
+Shelvez now includes a powerful SQLite-based caching system that allows you to cache function results to SQLite with compression. This is particularly useful for expensive computations that you want to persist across application restarts.
 
 ### Basic Usage
 
 ```python
-import shelvez.diskcache as diskcache
+import shelvez.sqlcache as sqlcache
 import time
 
 # TTL Cache - cache results for 1 hour
-@diskcache.ttl_cache(cache_path="cache.db", max_size=1000, ttl=3600)
+@sqlcache.ttl_cache(cache_path="cache.db", max_size=1000, ttl=3600)
 def expensive_function(x):
     time.sleep(1)  # Simulate expensive computation
     return x * x
@@ -163,7 +163,7 @@ print(result)  # 25
 
 ```python
 # LRU Cache - keeps only the 100 most recently used results
-@diskcache.lru_cache(cache_path="cache.db", max_size=100)
+@sqlcache.lru_cache(cache_path="cache.db", max_size=100)
 def fibonacci(n):
     if n <= 1:
         return n
@@ -177,7 +177,7 @@ result = fibonacci(30)  # Computed once, cached forever
 
 ```python
 # Custom cache with specific settings
-@diskcache.diskcache(
+@sqlcache.sqlcache(
     cache_path="my_cache.db",
     max_size=500,
     ttl=1800,  # 30 minutes
@@ -191,7 +191,7 @@ def my_function(x, y):
 
 ```python
 # Create a cache instance for advanced management
-cache = diskcache.DiskCache(
+cache = sqlcache.SqlCache(
     cache_path="advanced_cache.db",
     max_size=1000,
     ttl=3600,

@@ -14,14 +14,14 @@ from .sqlite import _Database
 from .serialer import BaseSerializer, PickleSerializer
 
 
-class DiskCacheError(Exception):
-    """DiskCache相关错误"""
+class SqlCacheError(Exception):
+    """SqlCache相关错误"""
 
     pass
 
 
-class _DiskCacheDatabase:
-    """磁盘缓存数据库管理类"""
+class _SqlCacheDatabase:
+    """SQLite缓存数据库管理类"""
 
     BUILD_TABLE = """
         CREATE TABLE IF NOT EXISTS cache (
@@ -59,7 +59,7 @@ class _DiskCacheDatabase:
         try:
             return self._db._execute(sql, params)
         except Exception as e:
-            raise DiskCacheError(f"数据库操作失败: {e}")
+            raise SqlCacheError(f"数据库操作失败: {e}")
 
     def _generate_key(self, func_name: str, args: tuple, kwargs: dict) -> str:
         """生成缓存键"""
@@ -141,14 +141,14 @@ class _DiskCacheDatabase:
             self._db.close()
 
 
-class DiskCache:
-    """磁盘缓存装饰器类"""
+class SqlCache:
+    """SQLite缓存装饰器类"""
 
     def __init__(
         self, cache_path: str = "cache.db", max_size: int = 1000, ttl: Optional[float] = None, cache_type: str = "lru"
     ):
         """
-        初始化磁盘缓存
+        初始化SQLite缓存
 
         Args:
             cache_path: 缓存数据库文件路径
@@ -165,7 +165,7 @@ class DiskCache:
             raise ValueError("cache_type必须是'ttl'或'lru'")
 
         # 创建数据库实例
-        self._db = _DiskCacheDatabase(cache_path)
+        self._db = _SqlCacheDatabase(cache_path)
 
         # 创建内存缓存用于快速访问
         if self.cache_type == "ttl":
@@ -185,7 +185,7 @@ class DiskCache:
             if cache_key in self._memory_cache:
                 return self._memory_cache[cache_key]
 
-            # 从磁盘缓存获取
+            # 从SQLite缓存获取
             cached_value = self._db.get(cache_key, self.ttl)
             if cached_value is not None:
                 # 更新内存缓存
@@ -195,7 +195,7 @@ class DiskCache:
             # 执行函数并缓存结果
             result = func(*args, **kwargs)
 
-            # 存储到磁盘缓存
+            # 存储到SQLite缓存
             self._db.set(cache_key, result)
 
             # 更新内存缓存
@@ -239,9 +239,9 @@ class DiskCache:
 
 
 # 便捷函数
-def diskcache(cache_path: str = "cache.db", max_size: int = 1000, ttl: Optional[float] = None, cache_type: str = "lru"):
+def sqlcache(cache_path: str = "cache.db", max_size: int = 1000, ttl: Optional[float] = None, cache_type: str = "lru"):
     """
-    磁盘缓存装饰器
+    SQLite缓存装饰器
 
     Args:
         cache_path: 缓存数据库文件路径
@@ -252,16 +252,16 @@ def diskcache(cache_path: str = "cache.db", max_size: int = 1000, ttl: Optional[
     Returns:
         装饰器函数
     """
-    cache = DiskCache(cache_path=cache_path, max_size=max_size, ttl=ttl, cache_type=cache_type)
+    cache = SqlCache(cache_path=cache_path, max_size=max_size, ttl=ttl, cache_type=cache_type)
     return cache
 
 
 # 预定义的装饰器
 def ttl_cache(cache_path: str = "cache.db", max_size: int = 1000, ttl: float = 3600):
     """TTL缓存装饰器"""
-    return diskcache(cache_path=cache_path, max_size=max_size, ttl=ttl, cache_type="ttl")
+    return sqlcache(cache_path=cache_path, max_size=max_size, ttl=ttl, cache_type="ttl")
 
 
 def lru_cache(cache_path: str = "cache.db", max_size: int = 1000):
     """LRU缓存装饰器"""
-    return diskcache(cache_path=cache_path, max_size=max_size, cache_type="lru")
+    return sqlcache(cache_path=cache_path, max_size=max_size, cache_type="lru")

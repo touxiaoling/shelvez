@@ -5,11 +5,11 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-import shelvez.diskcache as diskcache
+import shelvez.sqlcache as sqlcache
 
 
-class TestDiskCache:
-    """测试DiskCache功能"""
+class TestSqlCache:
+    """测试SqlCache功能"""
 
     def setup_method(self):
         """测试前准备"""
@@ -28,7 +28,7 @@ class TestDiskCache:
         """测试TTL缓存基本功能"""
         call_count = 0
 
-        @diskcache.ttl_cache(cache_path=self.cache_path, max_size=10, ttl=1)
+        @sqlcache.ttl_cache(cache_path=self.cache_path, max_size=10, ttl=1)
         def test_func(x):
             nonlocal call_count
             call_count += 1
@@ -56,7 +56,7 @@ class TestDiskCache:
         """测试LRU缓存基本功能"""
         call_count = 0
 
-        @diskcache.lru_cache(cache_path=self.cache_path, max_size=3)
+        @sqlcache.lru_cache(cache_path=self.cache_path, max_size=3)
         def test_func(x):
             nonlocal call_count
             call_count += 1
@@ -75,7 +75,7 @@ class TestDiskCache:
         """测试自定义缓存"""
         call_count = 0
 
-        @diskcache.diskcache(cache_path=self.cache_path, max_size=5, ttl=2, cache_type="ttl")
+        @sqlcache.sqlcache(cache_path=self.cache_path, max_size=5, ttl=2, cache_type="ttl")
         def test_func(x, y):
             nonlocal call_count
             call_count += 1
@@ -94,7 +94,7 @@ class TestDiskCache:
         """测试缓存复杂数据结构"""
         call_count = 0
 
-        @diskcache.ttl_cache(cache_path=self.cache_path, max_size=10, ttl=10)
+        @sqlcache.ttl_cache(cache_path=self.cache_path, max_size=10, ttl=10)
         def test_func(data):
             nonlocal call_count
             call_count += 1
@@ -115,7 +115,7 @@ class TestDiskCache:
     def test_cache_stats(self):
         """测试缓存统计信息"""
         # 创建缓存实例来测试统计功能
-        cache = diskcache.DiskCache(cache_path=self.cache_path, max_size=10, ttl=10, cache_type="ttl")
+        cache = sqlcache.SqlCache(cache_path=self.cache_path, max_size=10, ttl=10, cache_type="ttl")
 
         @cache
         def test_func(x):
@@ -139,7 +139,7 @@ class TestDiskCache:
     def test_cache_clear(self):
         """测试清空缓存"""
         # 创建缓存实例来测试清空功能
-        cache = diskcache.DiskCache(cache_path=self.cache_path, max_size=10, ttl=10, cache_type="ttl")
+        cache = sqlcache.SqlCache(cache_path=self.cache_path, max_size=10, ttl=10, cache_type="ttl")
 
         call_count = 0
 
@@ -168,7 +168,7 @@ class TestDiskCache:
         """测试不同参数的缓存"""
         call_count = 0
 
-        @diskcache.ttl_cache(cache_path=self.cache_path, max_size=10, ttl=10)
+        @sqlcache.ttl_cache(cache_path=self.cache_path, max_size=10, ttl=10)
         def test_func(x, y=10, *args, **kwargs):
             nonlocal call_count
             call_count += 1
@@ -200,7 +200,7 @@ class TestDiskCache:
         """测试缓存异常处理"""
         call_count = 0
 
-        @diskcache.ttl_cache(cache_path=self.cache_path, max_size=10, ttl=10)
+        @sqlcache.ttl_cache(cache_path=self.cache_path, max_size=10, ttl=10)
         def test_func(x):
             nonlocal call_count
             call_count += 1
@@ -229,7 +229,7 @@ class TestDiskCache:
         cache_path1 = self.cache_path + "_1"
         cache_path2 = self.cache_path + "_2"
 
-        @diskcache.ttl_cache(cache_path=cache_path1, max_size=10, ttl=10)
+        @sqlcache.ttl_cache(cache_path=cache_path1, max_size=10, ttl=10)
         def test_func(x):
             nonlocal call_count
             call_count += 1
@@ -246,7 +246,7 @@ class TestDiskCache:
         # 创建新的缓存实例（模拟重启）
         call_count = 0  # 重置计数器
 
-        @diskcache.ttl_cache(cache_path=cache_path2, max_size=10, ttl=10)
+        @sqlcache.ttl_cache(cache_path=cache_path2, max_size=10, ttl=10)
         def test_func_new(x):
             nonlocal call_count
             call_count += 1
@@ -259,7 +259,7 @@ class TestDiskCache:
 
     def test_cache_key_generation(self):
         """测试缓存键生成"""
-        cache = diskcache.DiskCache(cache_path=self.cache_path, max_size=10, ttl=10, cache_type="ttl")
+        cache = sqlcache.SqlCache(cache_path=self.cache_path, max_size=10, ttl=10, cache_type="ttl")
 
         # 测试相同参数生成相同键
         key1 = cache._db._generate_key("test_func", (1, 2), {"a": 1, "b": 2})
@@ -276,7 +276,7 @@ class TestDiskCache:
 
     def test_cache_cleanup_ttl(self):
         """测试TTL缓存清理"""
-        cache = diskcache.DiskCache(cache_path=self.cache_path, max_size=10, ttl=1, cache_type="ttl")
+        cache = sqlcache.SqlCache(cache_path=self.cache_path, max_size=10, ttl=1, cache_type="ttl")
 
         call_count = 0
 
@@ -300,7 +300,7 @@ class TestDiskCache:
 
     def test_cache_cleanup_lru(self):
         """测试LRU缓存清理"""
-        cache = diskcache.DiskCache(cache_path=self.cache_path, max_size=3, cache_type="lru")
+        cache = sqlcache.SqlCache(cache_path=self.cache_path, max_size=3, cache_type="lru")
 
         call_count = 0
 
@@ -322,7 +322,7 @@ class TestDiskCache:
         """测试缓存None值"""
         call_count = 0
 
-        @diskcache.ttl_cache(cache_path=self.cache_path, max_size=10, ttl=10)
+        @sqlcache.ttl_cache(cache_path=self.cache_path, max_size=10, ttl=10)
         def test_func(x):
             nonlocal call_count
             call_count += 1
@@ -348,7 +348,7 @@ class TestDiskCache:
         """测试缓存大数据"""
         call_count = 0
 
-        @diskcache.ttl_cache(cache_path=self.cache_path, max_size=10, ttl=10)
+        @sqlcache.ttl_cache(cache_path=self.cache_path, max_size=10, ttl=10)
         def test_func(size):
             nonlocal call_count
             call_count += 1
@@ -368,11 +368,11 @@ class TestDiskCache:
         """测试缓存错误处理"""
         # 测试无效的cache_type
         with pytest.raises(ValueError, match="cache_type必须是'ttl'或'lru'"):
-            diskcache.DiskCache(cache_path=self.cache_path, cache_type="invalid")
+            sqlcache.SqlCache(cache_path=self.cache_path, cache_type="invalid")
 
     def test_cache_close(self):
         """测试缓存关闭"""
-        cache = diskcache.DiskCache(cache_path=self.cache_path, max_size=10, ttl=10, cache_type="ttl")
+        cache = sqlcache.SqlCache(cache_path=self.cache_path, max_size=10, ttl=10, cache_type="ttl")
 
         @cache
         def test_func(x):
@@ -394,7 +394,7 @@ class TestDiskCache:
         call_count = 0
 
         # 测试ttl_cache便捷函数
-        @diskcache.ttl_cache(cache_path=self.cache_path, max_size=5, ttl=1)
+        @sqlcache.ttl_cache(cache_path=self.cache_path, max_size=5, ttl=1)
         def ttl_func(x):
             nonlocal call_count
             call_count += 1
@@ -405,7 +405,7 @@ class TestDiskCache:
         assert call_count == 1
 
         # 测试lru_cache便捷函数
-        @diskcache.lru_cache(cache_path=self.cache_path + "_lru", max_size=3)
+        @sqlcache.lru_cache(cache_path=self.cache_path + "_lru", max_size=3)
         def lru_func(x):
             nonlocal call_count
             call_count += 1
@@ -427,7 +427,7 @@ class TestDiskCache:
         def worker(value):
             cache_path = f"{self.cache_path}_{value}"
 
-            @diskcache.ttl_cache(cache_path=cache_path, max_size=10, ttl=10)
+            @sqlcache.ttl_cache(cache_path=cache_path, max_size=10, ttl=10)
             def test_func(x):
                 nonlocal call_count
                 call_count += 1
@@ -458,8 +458,8 @@ class TestDiskCache:
         assert call_count == 5  # 每个值计算一次
 
 
-class TestDiskCacheDatabase:
-    """测试_DiskCacheDatabase类"""
+class TestSqlCacheDatabase:
+    """测试_SqlCacheDatabase类"""
 
     def setup_method(self):
         """测试前准备"""
@@ -475,7 +475,7 @@ class TestDiskCacheDatabase:
 
     def test_database_creation(self):
         """测试数据库创建"""
-        db = diskcache._DiskCacheDatabase(self.cache_path)
+        db = sqlcache._SqlCacheDatabase(self.cache_path)
 
         # 验证数据库文件已创建
         assert os.path.exists(self.cache_path)
@@ -489,7 +489,7 @@ class TestDiskCacheDatabase:
 
     def test_database_operations(self):
         """测试数据库基本操作"""
-        db = diskcache._DiskCacheDatabase(self.cache_path)
+        db = sqlcache._SqlCacheDatabase(self.cache_path)
 
         # 测试设置和获取
         test_key = "test_key"
@@ -509,7 +509,7 @@ class TestDiskCacheDatabase:
 
     def test_database_ttl(self):
         """测试数据库TTL功能"""
-        db = diskcache._DiskCacheDatabase(self.cache_path)
+        db = sqlcache._SqlCacheDatabase(self.cache_path)
 
         test_key = "ttl_test"
         test_value = "test_data"
@@ -536,7 +536,7 @@ class TestDiskCacheDatabase:
 
     def test_database_cleanup(self):
         """测试数据库清理功能"""
-        db = diskcache._DiskCacheDatabase(self.cache_path)
+        db = sqlcache._SqlCacheDatabase(self.cache_path)
 
         # 添加一些测试数据
         for i in range(5):
@@ -563,7 +563,7 @@ class TestDiskCacheDatabase:
 
     def test_database_stats(self):
         """测试数据库统计功能"""
-        db = diskcache._DiskCacheDatabase(self.cache_path)
+        db = sqlcache._SqlCacheDatabase(self.cache_path)
 
         # 添加一些测试数据
         for i in range(3):
@@ -581,7 +581,7 @@ class TestDiskCacheDatabase:
 
     def test_database_clear(self):
         """测试数据库清空功能"""
-        db = diskcache._DiskCacheDatabase(self.cache_path)
+        db = sqlcache._SqlCacheDatabase(self.cache_path)
 
         # 添加测试数据
         db.set("key1", "value1")
@@ -601,8 +601,8 @@ class TestDiskCacheDatabase:
         db.close()
 
 
-class TestDiskCacheIntegration:
-    """测试DiskCache集成功能"""
+class TestSqlCacheIntegration:
+    """测试SqlCache集成功能"""
 
     def setup_method(self):
         """测试前准备"""
@@ -621,13 +621,13 @@ class TestDiskCacheIntegration:
         call_count1 = 0
         call_count2 = 0
 
-        @diskcache.ttl_cache(cache_path=self.cache_path, max_size=5, ttl=10)
+        @sqlcache.ttl_cache(cache_path=self.cache_path, max_size=5, ttl=10)
         def func1(x):
             nonlocal call_count1
             call_count1 += 1
             return x * 2
 
-        @diskcache.lru_cache(cache_path=self.cache_path + "_lru", max_size=3)
+        @sqlcache.lru_cache(cache_path=self.cache_path + "_lru", max_size=3)
         def func2(x):
             nonlocal call_count2
             call_count2 += 1
@@ -659,13 +659,13 @@ class TestDiskCacheIntegration:
         call_count1 = 0
         call_count2 = 0
 
-        @diskcache.ttl_cache(cache_path=cache1_path, max_size=5, ttl=10)
+        @sqlcache.ttl_cache(cache_path=cache1_path, max_size=5, ttl=10)
         def func1(x):
             nonlocal call_count1
             call_count1 += 1
             return x * 2
 
-        @diskcache.ttl_cache(cache_path=cache2_path, max_size=5, ttl=10)
+        @sqlcache.ttl_cache(cache_path=cache2_path, max_size=5, ttl=10)
         def func2(x):
             nonlocal call_count2
             call_count2 += 1
@@ -690,7 +690,7 @@ class TestDiskCacheIntegration:
 
         call_count = 0
 
-        @diskcache.ttl_cache(cache_path=self.cache_path, max_size=100, ttl=10)
+        @sqlcache.ttl_cache(cache_path=self.cache_path, max_size=100, ttl=10)
         def expensive_func(x):
             nonlocal call_count
             call_count += 1
@@ -715,12 +715,12 @@ class TestDiskCacheIntegration:
         """测试嵌套函数的缓存"""
         call_count = 0
 
-        @diskcache.ttl_cache(cache_path=self.cache_path, max_size=10, ttl=10)
+        @sqlcache.ttl_cache(cache_path=self.cache_path, max_size=10, ttl=10)
         def outer_func(x):
             nonlocal call_count
             call_count += 1
 
-            @diskcache.ttl_cache(cache_path=self.cache_path + "_inner", max_size=10, ttl=10)
+            @sqlcache.ttl_cache(cache_path=self.cache_path + "_inner", max_size=10, ttl=10)
             def inner_func(y):
                 return y * 2
 
