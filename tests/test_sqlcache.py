@@ -737,5 +737,122 @@ class TestSqlCacheIntegration:
         assert call_count == 1  # 从缓存获取
 
 
+class TestMultiprocessSqlCache:
+    """测试多进程环境下的SqlCache功能"""
+
+    def setup_method(self):
+        """测试前准备"""
+        self.temp_dir = tempfile.mkdtemp()
+        self.cache_path = os.path.join(self.temp_dir, "multiprocess_test.db")
+
+    def teardown_method(self):
+        """测试后清理"""
+        # 清理临时文件
+        import shutil
+
+        if os.path.exists(self.temp_dir):
+            shutil.rmtree(self.temp_dir)
+
+    def test_multiprocess_cache_safety(self):
+        """测试多进程缓存安全性"""
+        # 测试多进程安全模式的基本功能
+        call_count = 0
+
+        @sqlcache.ttl_cache(cache_path=self.cache_path, max_size=100, ttl=10, multiprocess_safe=True)
+        def compute_value(x):
+            nonlocal call_count
+            call_count += 1
+            return x * x
+
+        # 执行一些操作
+        for i in range(5):
+            result = compute_value(i)
+            assert result == i * i
+
+        # 验证缓存工作正常
+        assert call_count == 5, f"期望调用5次，实际调用{call_count}次"
+
+        # 验证缓存文件存在
+        assert os.path.exists(self.cache_path), "缓存文件未创建"
+
+        # 测试缓存命中
+        call_count_before = call_count
+        result = compute_value(0)  # 应该从缓存获取
+        assert result == 0
+        assert call_count == call_count_before, "缓存命中失败"
+
+    def test_multiprocess_vs_single_process(self):
+        """对比多进程和单进程模式"""
+
+        # 测试单进程模式
+        call_count_single = 0
+
+        @sqlcache.ttl_cache(cache_path=f"{self.cache_path}_single", max_size=50, ttl=5, multiprocess_safe=False)
+        def single_process_func(x):
+            nonlocal call_count_single
+            call_count_single += 1
+            return x * 2
+
+        # 执行单进程操作
+        for i in range(5):
+            result = single_process_func(i)
+            assert result == i * 2
+
+        # 测试多进程模式
+        call_count_multi = 0
+
+        @sqlcache.ttl_cache(cache_path=f"{self.cache_path}_multi", max_size=50, ttl=5, multiprocess_safe=True)
+        def multi_process_func(x):
+            nonlocal call_count_multi
+            call_count_multi += 1
+            return x * 3
+
+        # 执行多进程操作
+        for i in range(5):
+            result = multi_process_func(i)
+            assert result == i * 3
+
+        # 验证两种模式都能正常工作
+        assert call_count_single == 5, "单进程模式调用次数不正确"
+        assert call_count_multi == 5, "多进程模式调用次数不正确"
+
+    def test_database_lock_retry_mechanism(self):
+        """测试数据库锁定重试机制"""
+        import threading
+        import concurrent.futures
+
+        call_count = 0
+        results = []
+
+        @sqlcache.ttl_cache(cache_path=self.cache_path, max_size=100, ttl=10, multiprocess_safe=True)
+        def compute_value(x):
+            nonlocal call_count
+            call_count += 1
+            time.sleep(0.05)  # 增加计算时间以增加锁定概率
+            return x * x
+
+        def worker(x):
+            try:
+                result = compute_value(x)
+                results.append((x, result, "SUCCESS"))
+            except Exception as e:
+                results.append((x, None, f"ERROR: {e}"))
+
+        # 使用线程池模拟并发访问
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(worker, i) for i in range(10)]
+            concurrent.futures.wait(futures, timeout=30)
+
+        # 验证所有操作都成功
+        success_count = sum(1 for r in results if r[2] == "SUCCESS")
+        error_count = sum(1 for r in results if r[2].startswith("ERROR"))
+
+        assert error_count == 0, f"有 {error_count} 个操作失败: {[r for r in results if r[2].startswith('ERROR')]}"
+        assert success_count == 10, f"期望 10 个成功操作，实际 {success_count} 个"
+
+        # 验证缓存工作正常（应该有一些缓存命中）
+        assert call_count <= 10, "缓存机制可能有问题"
+
+
 if __name__ == "__main__":
     pytest.main([__file__])

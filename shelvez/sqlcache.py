@@ -3,6 +3,7 @@ import sqlite3
 import time
 import hashlib
 import pickle
+import random
 from pathlib import Path
 from contextlib import suppress, closing
 from functools import wraps
@@ -41,12 +42,25 @@ class _SqlCacheDatabase:
         CREATE INDEX IF NOT EXISTS idx_last_access ON cache(last_access)
     """
 
-    def __init__(self, cache_path: str):
+    def __init__(self, cache_path: str, multiprocess_safe: bool = True):
         self.cache_path = Path(cache_path)
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+        self.multiprocess_safe = multiprocess_safe
+
+        # 为多进程环境优化SQLite连接参数
+        sqlite3_kargs = {}
+        if multiprocess_safe:
+            sqlite3_kargs = {
+                "check_same_thread": False,
+            }
 
         # 使用现有的_Database类来管理SQLite连接
-        self._db = _Database(str(self.cache_path), flag="c", mode=0o666)
+        self._db = _Database(str(self.cache_path), flag="c", mode=0o666, sqlite3_kargs=sqlite3_kargs)
+
+        # 为多进程环境优化PRAGMA设置
+        if multiprocess_safe:
+            self._optimize_for_multiprocess()
+
         self._execute(self.BUILD_TABLE)
         self._execute(self.CREATE_INDEX)
         self._execute(self.CREATE_ACCESS_INDEX)
@@ -54,12 +68,47 @@ class _SqlCacheDatabase:
         # 使用现有的序列化器
         self.serializer = PickleSerializer()
 
-    def _execute(self, sql: str, params: tuple = ()):
-        """执行SQL语句"""
+    def _optimize_for_multiprocess(self):
+        """为多进程环境优化SQLite设置"""
         try:
-            return self._db._execute(sql, params)
-        except Exception as e:
-            raise SqlCacheError(f"数据库操作失败: {e}")
+            # 为多进程环境优化的PRAGMA设置
+            self._db._cx.execute("PRAGMA journal_mode = wal")  # WAL模式支持并发读取
+            self._db._cx.execute("PRAGMA synchronous = normal")  # 平衡性能和安全性
+            self._db._cx.execute("PRAGMA busy_timeout = 30000")  # 30秒超时
+            self._db._cx.execute("PRAGMA cache_size = -20000")  # 20MB缓存
+            self._db._cx.execute("PRAGMA temp_store = MEMORY")  # 临时表存储在内存
+            self._db._cx.execute("PRAGMA mmap_size = 268435456")  # 256MB内存映射
+            self._db._cx.execute("PRAGMA page_size = 4096")  # 4KB页面大小
+        except sqlite3.OperationalError:
+            # PRAGMA设置失败不影响功能，忽略错误
+            pass
+
+    def _execute(self, sql: str, params: tuple = ()):
+        """执行SQL语句，带重试机制"""
+        if not self.multiprocess_safe:
+            # 非多进程安全模式，直接执行
+            try:
+                return self._db._execute(sql, params)
+            except Exception as e:
+                raise SqlCacheError(f"数据库操作失败: {e}")
+
+        # 多进程安全模式，带重试机制
+        max_retries = 5
+        base_delay = 0.1
+
+        for attempt in range(max_retries):
+            try:
+                return self._db._execute(sql, params)
+            except sqlite3.OperationalError as exc:
+                if "database is locked" in str(exc).lower() and attempt < max_retries - 1:
+                    # 指数退避 + 随机抖动
+                    delay = base_delay * (2**attempt) + random.uniform(0, 0.1)
+                    time.sleep(delay)
+                    continue
+                else:
+                    raise SqlCacheError(f"数据库被锁定，可能是多进程同时访问导致的。请稍后重试: {exc}")
+            except Exception as e:
+                raise SqlCacheError(f"数据库操作失败: {e}")
 
     def _generate_key(self, func_name: str, args: tuple, kwargs: dict) -> str:
         """生成缓存键"""
@@ -145,7 +194,12 @@ class SqlCache:
     """SQLite缓存装饰器类"""
 
     def __init__(
-        self, cache_path: str = "cache.db", max_size: int = 1000, ttl: Optional[float] = None, cache_type: str = "lru"
+        self,
+        cache_path: str = "cache.db",
+        max_size: int = 1000,
+        ttl: Optional[float] = None,
+        cache_type: str = "lru",
+        multiprocess_safe: bool = True,
     ):
         """
         初始化SQLite缓存
@@ -155,17 +209,19 @@ class SqlCache:
             max_size: 最大缓存数量
             ttl: 缓存时间（秒），None表示不过期
             cache_type: 缓存类型，"ttl"或"lru"
+            multiprocess_safe: 是否启用多进程安全模式
         """
         self.cache_path = cache_path
         self.max_size = max_size
         self.ttl = ttl
         self.cache_type = cache_type.lower()
+        self.multiprocess_safe = multiprocess_safe
 
         if self.cache_type not in ["ttl", "lru"]:
             raise ValueError("cache_type必须是'ttl'或'lru'")
 
         # 创建数据库实例
-        self._db = _SqlCacheDatabase(cache_path)
+        self._db = _SqlCacheDatabase(cache_path, multiprocess_safe=multiprocess_safe)
 
         # 创建内存缓存用于快速访问
         if self.cache_type == "ttl":
@@ -239,7 +295,13 @@ class SqlCache:
 
 
 # 便捷函数
-def sqlcache(cache_path: str = "cache.db", max_size: int = 1000, ttl: Optional[float] = None, cache_type: str = "lru"):
+def sqlcache(
+    cache_path: str = "cache.db",
+    max_size: int = 1000,
+    ttl: Optional[float] = None,
+    cache_type: str = "lru",
+    multiprocess_safe: bool = True,
+):
     """
     SQLite缓存装饰器
 
@@ -248,20 +310,23 @@ def sqlcache(cache_path: str = "cache.db", max_size: int = 1000, ttl: Optional[f
         max_size: 最大缓存数量
         ttl: 缓存时间（秒），None表示不过期
         cache_type: 缓存类型，"ttl"或"lru"
+        multiprocess_safe: 是否启用多进程安全模式
 
     Returns:
         装饰器函数
     """
-    cache = SqlCache(cache_path=cache_path, max_size=max_size, ttl=ttl, cache_type=cache_type)
+    cache = SqlCache(
+        cache_path=cache_path, max_size=max_size, ttl=ttl, cache_type=cache_type, multiprocess_safe=multiprocess_safe
+    )
     return cache
 
 
 # 预定义的装饰器
-def ttl_cache(cache_path: str = "cache.db", max_size: int = 1000, ttl: float = 3600):
+def ttl_cache(cache_path: str = "cache.db", max_size: int = 1000, ttl: float = 3600, multiprocess_safe: bool = True):
     """TTL缓存装饰器"""
-    return sqlcache(cache_path=cache_path, max_size=max_size, ttl=ttl, cache_type="ttl")
+    return sqlcache(cache_path=cache_path, max_size=max_size, ttl=ttl, cache_type="ttl", multiprocess_safe=multiprocess_safe)
 
 
-def lru_cache(cache_path: str = "cache.db", max_size: int = 1000):
+def lru_cache(cache_path: str = "cache.db", max_size: int = 1000, multiprocess_safe: bool = True):
     """LRU缓存装饰器"""
-    return sqlcache(cache_path=cache_path, max_size=max_size, cache_type="lru")
+    return sqlcache(cache_path=cache_path, max_size=max_size, cache_type="lru", multiprocess_safe=multiprocess_safe)
