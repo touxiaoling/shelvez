@@ -20,8 +20,8 @@ class BaseSerializer:
 
 class JsonSerializer(BaseSerializer):
     def serialize(self, obj: dict):
-        jsons = json.dumps(obj, indent=None, ensure_ascii=False, separators=(",", ":"))
-        return jsons.encode("utf-8")
+        # indent=None 显式传入：表示产出最紧凑的单行 JSON（配合 separators 去掉多余空格）
+        return json.dumps(obj, indent=None, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
     def unserialize(self, obj: bytes):
         return json.loads(obj)
@@ -50,16 +50,19 @@ class PydanticSerializer(BaseSerializer):
 
     def __init__(self, model: "type[pydantic.BaseModel]"):
         try:
-            import pydantic  # noqa: F401
+            from pydantic import TypeAdapter
         except ImportError as exc:
             raise ImportError(
                 "PydanticSerializer requires the optional 'pydantic' package. "
                 "Install it with:  pip install pydantic  (or `pip install shelvez[pydantic]`)."
             ) from exc
         self.model = model
+        # 缓存 TypeAdapter：它的 dump_json / validate_json 直接读写 bytes，
+        # 避免 model_dump_json() 先生成 str 再 .encode("utf-8") 的多余一趟。
+        self._adapter = TypeAdapter(model)
 
     def serialize(self, obj: "pydantic.BaseModel"):
-        return obj.model_dump_json(exclude_unset=True, indent=None).encode("utf-8")
+        return self._adapter.dump_json(obj, exclude_unset=True)
 
     def unserialize(self, obj: bytes):
-        return self.model.model_validate_json(obj)
+        return self._adapter.validate_json(obj)
