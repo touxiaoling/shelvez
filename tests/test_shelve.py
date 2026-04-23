@@ -29,7 +29,7 @@ def test_pydantic_serializer(db_path: str):
         key: str
         key2: str = "default"
 
-    serializer = shelvez.serialer.PydanticSerializer(MyModel)
+    serializer = shelvez.serializer.PydanticSerializer(MyModel)
     with shelvez.open(db_path, flag="c", serializer=serializer) as db:
         db["a"] = MyModel(key="v1")
         db["b"] = MyModel(key="v2", key2="explicit")

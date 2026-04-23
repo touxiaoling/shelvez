@@ -1,11 +1,10 @@
 import collections.abc
-from functools import partial
-import json
+from typing import cast
 
-from . import serialer
+from .serializer import BaseSerializer, PickleSerializer
 from . import sqlite
 
-__all__ = ["Shelf", "DbfilenameShelf", "open"]
+__all__ = ["Shelf", "open"]
 
 
 class _ClosedDict(collections.abc.MutableMapping):
@@ -21,86 +20,99 @@ class _ClosedDict(collections.abc.MutableMapping):
 
 
 class Shelf(collections.abc.MutableMapping):
-    """Base class for shelf implementations.
+    """Persistent dict-like shelf backed by a single SQLite file."""
 
-    This is initialized with a dictionary-like object.
-    See the module's __doc__ string for an overview of the interface.
-    """
-
-    def __init__(self, dict: sqlite._Database, writeback=False, keyencoding="utf-8", serializer=None):
-        self.dict = dict
+    def __init__(
+        self,
+        filename,
+        flag: str = "c",
+        writeback: bool = False,
+        serializer: BaseSerializer | None = None,
+    ):
+        sqlite3_kargs = {"autocommit": True, "check_same_thread": False}
+        # 运行时 self.dict 在 close() 后会被替换为 _ClosedDict() 哨兵，
+        # 对外正常操作都走 _Database；此处按 _Database 声明，close 里用
+        # cast 做类型兜底，避免在每个调用点做无意义的类型收窄。
+        self.dict: sqlite._Database = sqlite.open(filename, flag, sqlite3_kargs=sqlite3_kargs)
         self.writeback = writeback
-        self.cache = {}
-        self.keyencoding = keyencoding
-        if serializer is None:
-            self.serializer = serialer.PickleSerializer()
-        else:
-            self.serializer: serialer.BaseSerializer = serializer
+        self.cache: dict[str, object] = {}
+        self.serializer: BaseSerializer = serializer or PickleSerializer()
+        self._closed = False
 
     def __iter__(self):
-        for k in self.dict.keys():
-            yield k
+        return iter(self.dict.keys())
 
     def __len__(self):
         return len(self.dict)
 
-    def __contains__(self, key: str):
+    def __contains__(self, key: object) -> bool:
         return key in self.dict
-
-    def get(self, key: str, default=None):
-        if key in self.dict:
-            return self[key]
-        return default
 
     def __getitem__(self, key: str):
         try:
-            value = self.cache[key]
+            return self.cache[key]
         except KeyError:
-            f = self.dict[key]
-            value = self.serializer.unserialize(f)
-            if self.writeback:
-                self.cache[key] = value
+            pass
+        value = self.serializer.unserialize(self.dict[key])
+        if self.writeback:
+            self.cache[key] = value
         return value
 
-    def __setitem__(self, key: str, value: dict):
+    def __setitem__(self, key: str, value):
         if self.writeback:
             self.cache[key] = value
         self.dict[key] = self.serializer.serialize(value)
 
     def __delitem__(self, key: str):
         del self.dict[key]
-        try:
-            del self.cache[key]
-        except KeyError:
-            pass
+        self.cache.pop(key, None)
+
+    def clear(self):
+        """Remove all items from the shelf."""
+        # see https://github.com/python/cpython/issues/107089
+        self.cache.clear()
+        self.dict.clear()
 
     def __enter__(self):
+        # Opens an explicit SQLite transaction so all writes inside the
+        # ``with`` block are batched into a single commit on success (or
+        # rolled back on exception). This is a big speed win for bulk
+        # ``db[k] = v`` loops; previously every item was its own fsync-ing
+        # write under ``autocommit=True``.
+        self.dict.begin()
         return self
 
-    def __exit__(self, type, value, traceback):
-        self.close()
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            if exc_type is None:
+                # Flush writeback cache so its entries participate in the
+                # pending transaction before we commit.
+                self.sync()
+                self.dict.commit()
+            else:
+                # Drop pending writeback so ``close()`` doesn't replay those
+                # writes after we just rolled the transaction back.
+                self.cache = {}
+                self.dict.rollback()
+        finally:
+            self.close()
 
     def close(self):
-        if self.dict is None:
+        if self._closed:
             return
+        self._closed = True
         try:
             self.sync()
-            try:
-                self.dict.close()
-            except AttributeError:
-                pass
+            self.dict.close()
         finally:
-            # Catch errors that may happen when close is called from __del__
-            # because CPython is in interpreter shutdown.
-            try:
-                self.dict = _ClosedDict()
-            except:
-                self.dict = None
+            # 用 _ClosedDict 作为哨兵；之后再对 shelf 做任何操作都会在
+            # _ClosedDict 上 raise ValueError。
+            self.dict = cast(sqlite._Database, _ClosedDict())
 
     def __del__(self):
+        # __init__ 失败时可能没设置 writeback，避免 close() 再次出错。
+        # see http://bugs.python.org/issue1339007
         if not hasattr(self, "writeback"):
-            # __init__ didn't succeed, so don't bother closing
-            # see http://bugs.python.org/issue1339007 for details
             return
         self.close()
 
@@ -111,42 +123,22 @@ class Shelf(collections.abc.MutableMapping):
                 self[key] = entry
             self.writeback = True
             self.cache = {}
-        if hasattr(self.dict, "sync"):
-            self.dict.sync()
 
 
-class DbfilenameShelf(Shelf):
-    """Shelf implementation using the "dbm" generic dbm interface.
+def open(
+    filename,
+    flag: str = "c",
+    writeback: bool = False,
+    serializer: BaseSerializer | None = None,
+) -> Shelf:
+    """Open a persistent dictionary backed by SQLite + zstd.
 
-    This is initialized with the filename for the dbm database.
-    See the module's __doc__ string for an overview of the interface.
+    Args:
+        filename: Path to the SQLite database file.
+        flag: 'r' (read-only), 'w' (read/write existing), 'c' (create if
+            missing, default), or 'n' (always create a new, empty db).
+        writeback: Cache every read value so in-place mutations are
+            preserved and written back on ``sync()`` / ``close()``.
+        serializer: Value serializer. Defaults to :class:`PickleSerializer`.
     """
-
-    def __init__(self, filename, flag="c", writeback=False, serializer=None):
-        sqlite3_kargs = dict(autocommit=True, check_same_thread=False)
-        Shelf.__init__(
-            self, dict=sqlite.open(filename, flag, sqlite3_kargs=sqlite3_kargs), writeback=writeback, serializer=serializer
-        )
-
-    def clear(self):
-        """Remove all items from the shelf."""
-        # Call through to the clear method on dbm-backed shelves.
-        # see https://github.com/python/cpython/issues/107089
-        self.cache.clear()
-        self.dict.clear()
-
-
-def open(filename, flag="c", writeback=False, serializer=None):
-    """Open a persistent dictionary for reading and writing.
-
-    The filename parameter is the base filename for the underlying
-    database.  As a side-effect, an extension may be added to the
-    filename and more than one file may be created.  The optional flag
-    parameter has the same interpretation as the flag parameter of
-    dbm.open(). The optional protocol parameter specifies the
-    version of the pickle protocol.
-
-    See the module's __doc__ string for an overview of the interface.
-    """
-
-    return DbfilenameShelf(filename, flag, writeback, serializer=serializer)
+    return Shelf(filename, flag, writeback, serializer=serializer)

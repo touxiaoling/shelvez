@@ -1,7 +1,7 @@
 import os
 import sqlite3
 from pathlib import Path
-from contextlib import suppress, closing
+from contextlib import suppress, closing, contextmanager
 from collections.abc import MutableMapping
 
 from .zstd import ZstdCompressor
@@ -12,10 +12,11 @@ BUILD_TABLE = """
     value BLOB NOT NULL
   )
 """
-GET_SIZE = "SELECT COUNT (key) FROM Dict"
-LOOKUP_KEY = "SELECT value FROM Dict WHERE key = CAST(? AS TEXT)"
-STORE_KV = "REPLACE INTO Dict (key, value) VALUES (CAST(? AS TEXT), CAST(? AS BLOB))"
-DELETE_KEY = "DELETE FROM Dict WHERE key = CAST(? AS TEXT)"
+GET_SIZE = "SELECT COUNT(key) FROM Dict"
+LOOKUP_KEY = "SELECT value FROM Dict WHERE key = ?"
+EXISTS_KEY = "SELECT 1 FROM Dict WHERE key = ? LIMIT 1"
+STORE_KV = "REPLACE INTO Dict (key, value) VALUES (?, ?)"
+DELETE_KEY = "DELETE FROM Dict WHERE key = ?"
 ITER_KEYS = "SELECT key FROM Dict"
 BUILD_ZSTD_TABLE = """
   CREATE TABLE IF NOT EXISTS Zstd (
@@ -44,6 +45,8 @@ def _normalize_uri(path):
 
 
 class _Database(MutableMapping):
+    _cx: sqlite3.Connection | None
+
     def __init__(self, path, /, *, flag, mode, sqlite3_kargs={}):
         if hasattr(self, "_cx"):
             raise error(_ERR_REINIT)
@@ -73,15 +76,16 @@ class _Database(MutableMapping):
         except sqlite3.Error as exc:
             raise error(str(exc))
 
-        # This is an optimization only; it's ok if it fails.
+        self._in_tx = False
+
+        # Throughput PRAGMAs; all strictly advisory, so wrap in suppress.
         with suppress(sqlite3.OperationalError):
             self._cx.execute("PRAGMA journal_mode = wal")
             self._cx.execute("PRAGMA synchronous = normal")
             self._cx.execute("PRAGMA busy_timeout = 5000")
-            # self._cx.execute("PRAGMA cache_size = -20000")
-            # self._cx.execute("PRAGMA temp_store = MEMORY")
-            # self._cx.execute("PRAGMA mmap_size = 2147483648")
-            # self._cx.execute("PRAGMA page_size = 8192")
+            self._cx.execute("PRAGMA cache_size = -20000")
+            self._cx.execute("PRAGMA temp_store = MEMORY")
+            self._cx.execute("PRAGMA mmap_size = 268435456")
 
         if flag == "rwc":
             self._execute(BUILD_TABLE)
@@ -108,12 +112,16 @@ class _Database(MutableMapping):
             row = cu.fetchone()
         if not row:
             raise KeyError(key)
-        value = self.compressor.decompress(row[0])
-        return value
+        return self.compressor.decompress(row[0])
+
+    def __contains__(self, key):
+        with self._execute(EXISTS_KEY, (key,)) as cu:
+            return cu.fetchone() is not None
 
     def __setitem__(self, key, value):
         value = self.compressor.compress(value)
-        self._execute(STORE_KV, (key, value))
+        with self._execute(STORE_KV, (key, value)):
+            pass
 
     def __delitem__(self, key):
         with self._execute(DELETE_KEY, (key,)) as cu:
@@ -135,31 +143,119 @@ class _Database(MutableMapping):
             return row[0]
 
     def _save_zstd_dict(self, zstd_dict):
-        self._execute(STORE_ZSTD, ("dict", zstd_dict))
+        with self._execute(STORE_ZSTD, ("dict", zstd_dict)):
+            pass
+
+    # ------------------------------------------------------------------
+    # Explicit transactions
+    # ------------------------------------------------------------------
+    def begin(self):
+        """Open an explicit SQLite transaction.
+
+        Calling this while a transaction is already open is a no-op, which
+        makes it safe to nest ``with db:`` inside another ``with db:`` or
+        inside :meth:`transaction`.
+        """
+        if not self._cx:
+            raise error(_ERR_CLOSED)
+        if self._in_tx:
+            return
+        try:
+            self._cx.execute("BEGIN")
+        except sqlite3.Error as exc:
+            raise error(str(exc))
+        self._in_tx = True
+
+    def commit(self):
+        # NOTE: with ``autocommit=True`` (the mode we open connections in),
+        # ``Connection.commit()`` is documented as a no-op. We therefore
+        # drive the transaction with explicit SQL statements.
+        if not self._cx or not self._in_tx:
+            return
+        try:
+            self._cx.execute("COMMIT")
+        finally:
+            self._in_tx = False
+
+    def rollback(self):
+        if not self._cx or not self._in_tx:
+            return
+        try:
+            self._cx.execute("ROLLBACK")
+        finally:
+            self._in_tx = False
+
+    @contextmanager
+    def transaction(self):
+        """Batch several writes into a single SQLite transaction.
+
+        Every ``__setitem__`` / ``__delitem__`` inside the block goes into
+        the same transaction instead of each getting its own fsync. On
+        exception the transaction is rolled back.
+        """
+        self.begin()
+        try:
+            yield self
+        except BaseException:
+            self.rollback()
+            raise
+        else:
+            self.commit()
+
+    def _executemany(self, sql, seq_of_params):
+        if not self._cx:
+            raise error(_ERR_CLOSED)
+        try:
+            return closing(self._cx.executemany(sql, seq_of_params))
+        except sqlite3.Error as exc:
+            raise error(str(exc))
 
     def optimize_database(self):
-        samples = [value for value in self.values()]
-        zstd_dict = ZstdCompressor.optimize_dict(samples)
+        # Read once, keep (key, decompressed_value) in memory so we don't
+        # iterate the table twice.
+        pairs = list(self.items())
+        samples = [v for _, v in pairs]
 
-        rows = [(k, v) for k, v in self.items()]
+        zstd_dict = ZstdCompressor.optimize_dict(samples)
         self.compressor = ZstdCompressor(zstd_dict=zstd_dict)
-        [self.__setitem__(k, v) for k, v in rows]
-        self._save_zstd_dict(zstd_dict)
-        self._execute("VACUUM")
+
+        compressed = [(k, self.compressor.compress(v)) for k, v in pairs]
+
+        with self.transaction():
+            with self._executemany(STORE_KV, compressed):
+                pass
+            with self._execute(STORE_ZSTD, ("dict", zstd_dict)):
+                pass
+
+        # VACUUM cannot run inside an active transaction.
+        with self._execute("VACUUM"):
+            pass
 
     def close(self):
         if self._cx:
+            if self._in_tx:
+                with suppress(sqlite3.Error):
+                    self._cx.execute("ROLLBACK")
+                self._in_tx = False
             self._cx.close()
             self._cx = None
 
     def keys(self):
-        return list(super().keys())
+        with self._execute(ITER_KEYS) as cu:
+            return [row[0] for row in cu.fetchall()]
 
     def __enter__(self):
+        self.begin()
         return self
 
-    def __exit__(self, *args):
-        self.close()
+    def __exit__(self, exc_type, *args):
+        try:
+            if exc_type is None:
+                self.commit()
+            else:
+                self.rollback()
+        finally:
+            self.close()
 
 
 def open(filename, /, flag="r", mode=0o666, sqlite3_kargs={}):

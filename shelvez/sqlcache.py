@@ -14,7 +14,7 @@ from collections import OrderedDict
 
 from cachetools import TTLCache, LRUCache
 from .sqlite import _Database
-from .serialer import BaseSerializer, PickleSerializer
+from .serializer import BaseSerializer, PickleSerializer
 
 
 class SqlCacheError(Exception):
@@ -91,15 +91,18 @@ class _SqlCacheDatabase:
 
     def _optimize_for_multiprocess(self):
         """为多进程环境优化SQLite设置"""
+        cx = self._db._cx
+        if cx is None:
+            return
         try:
             # 为多进程环境优化的PRAGMA设置
-            self._db._cx.execute("PRAGMA journal_mode = wal")  # WAL模式支持并发读取
-            self._db._cx.execute("PRAGMA synchronous = normal")  # 平衡性能和安全性
-            self._db._cx.execute("PRAGMA busy_timeout = 30000")  # 30秒超时
-            self._db._cx.execute("PRAGMA cache_size = -20000")  # 20MB缓存
-            self._db._cx.execute("PRAGMA temp_store = MEMORY")  # 临时表存储在内存
-            self._db._cx.execute("PRAGMA mmap_size = 268435456")  # 256MB内存映射
-            self._db._cx.execute("PRAGMA page_size = 4096")  # 4KB页面大小
+            cx.execute("PRAGMA journal_mode = wal")  # WAL模式支持并发读取
+            cx.execute("PRAGMA synchronous = normal")  # 平衡性能和安全性
+            cx.execute("PRAGMA busy_timeout = 30000")  # 30秒超时
+            cx.execute("PRAGMA cache_size = -20000")  # 20MB缓存
+            cx.execute("PRAGMA temp_store = MEMORY")  # 临时表存储在内存
+            cx.execute("PRAGMA mmap_size = 268435456")  # 256MB内存映射
+            cx.execute("PRAGMA page_size = 4096")  # 4KB页面大小
         except sqlite3.OperationalError:
             # PRAGMA设置失败不影响功能，忽略错误
             pass
@@ -116,9 +119,12 @@ class _SqlCacheDatabase:
         base_delay = 0.1
 
         with self._lock:
+            cx = self._db._cx
+            if cx is None:
+                raise SqlCacheError("数据库连接已关闭")
             for attempt in range(max_retries):
                 try:
-                    cursor = self._db._cx.execute(sql, params)
+                    cursor = cx.execute(sql, params)
                     break
                 except sqlite3.OperationalError as exc:
                     if self.multiprocess_safe and "database is locked" in str(exc).lower() and attempt < max_retries - 1:
@@ -282,7 +288,8 @@ class SqlCache:
         @wraps(func)
         def wrapper(*args, **kwargs):
             # 生成缓存键
-            cache_key = self._db._generate_key(func.__name__, args, kwargs)
+            func_name = getattr(func, "__name__", repr(func))
+            cache_key = self._db._generate_key(func_name, args, kwargs)
 
             # 先尝试从内存缓存获取
             if cache_key in self._memory_cache:

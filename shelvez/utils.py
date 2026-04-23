@@ -9,7 +9,8 @@ def timeit(func: Callable):
         start_time = time.time()
         result = func(*args, **kwargs)
         elapsed_time = time.time() - start_time
-        print(f"Function '{func.__name__}' executed in {elapsed_time:.4f} seconds")
+        func_name = getattr(func, "__name__", repr(func))
+        print(f"Function '{func_name}' executed in {elapsed_time:.4f} seconds")
         return result
 
     return wrapper

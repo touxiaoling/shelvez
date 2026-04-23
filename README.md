@@ -4,31 +4,31 @@
 This package functions similarly to Python's built-in `shelve` but offers additional features such as:
 
 - **Zstandard (zstd) compression** for efficient storage  ✅ DONE
-- **SQLite-backed transactions** to ensure data integrity  ⚠️ TODO
+- **SQLite-backed transactions** — batch writes with `with shelve.open(...) as db:`; the underlying `db.dict` also exposes `begin` / `commit` / `transaction()` for advanced use  ✅ DONE
 - **Multiple serialization formats support**: JSON, Pickle, and Pydantic models  ✅ DONE
 - **SQLite-based function caching** with TTL and LRU strategies  ✅ DONE
 
 ---
 
 ## 📊 Benchmark
-> Benchmark functions are defined in `tests/test_shelve.py`.
+> Benchmark functions are defined in `tests/benchmarks/test_shelve_bench.py`.
 
 ### 🔥 Performance Comparison
 
-| Test Case                 | Min (ms) | Max (ms) | Mean (ms) | StdDev (ms) | Median (ms) | OPS (ops/sec) | Rounds |
-|--------------------------|----------|----------|-----------|-------------|-------------|----------------|--------|
-| `shelve_speed`           | 443.62   | 459.37   | 450.19    | 5.96        | 450.10      | 2.22           | 5      |
-| `shelvez_pickle_speed`   | 237.18   | 243.08   | 240.01    | 2.54        | 239.53      | 4.17           | 5      |
-| `shelvez_pydantic_speed` | 245.33   | 318.90   | 263.59    | 31.14       | 252.38      | 3.79           | 5      |
-| `shelvez_json_speed`     | 246.83   | 250.72   | 249.37    | 1.57        | 249.44      | 4.01           | 5      |
+| Test Case                     | Min (ms) | Max (ms) | Mean (ms) | StdDev (ms) | Median (ms) | OPS (ops/sec) | Rounds |
+|-------------------------------|----------|----------|-----------|-------------|-------------|---------------|--------|
+| `shelvez_pickle_speed`        | 147.78   | 154.81   | 149.30    | 2.29        | 148.49      | 6.70          | 8      |
+| `shelvez_pydantic_speed`      | 151.57   | 155.64   | 153.13    | 1.53        | 152.90      | 6.53          | 7      |
+| `shelvez_json_speed`         | 154.66   | 157.41   | 155.99    | 1.00        | 156.28      | 6.41          | 7      |
+| `stdlib_shelve_speed`        | 264.41   | 277.42   | 268.82    | 5.14        | 266.58      | 3.72          | 5      |
 
-> OPS = Operations Per Second (calculated as 1 / Mean)
+> OPS = Operations Per Second (calculated as 1 / Mean). Timings are from one environment and will differ on other CPUs / interpreters.
 
 ---
 
 ### 🗂️ Database Size Comparison
 
-> File sizes are measured after writing the same number key-value data using each backend.
+> Same workload as the speed benchmarks: **10,000** random key–value pairs (`_make_payload` in `tests/benchmarks/test_shelve_bench.py`). For `shelvez`, sizes are taken **after** `db.dict.optimize_database()` (custom zstd dictionary + recompression). Reproduce the printed sizes with `pytest tests/benchmarks -m benchmark -s`.
 
 | Backend                 | File Size |
 |-------------------------|-----------|
@@ -37,7 +37,7 @@ This package functions similarly to Python's built-in `shelve` but offers additi
 | `shelvez` (JSON)        | 312.00 kB |
 | `shelvez` (Pydantic)    | 308.00 kB |
 
-> Smaller database files and faster write performance make `shelvez` a more efficient alternative to the standard `shelve` module.
+> The kB values above were checked with `pytest tests/benchmarks -m benchmark -s` (stdout from `_report_size`); minor drift is normal because the benchmark uses random keys/values and trains a zstd dictionary. For this workload, `shelvez` produces smaller files and faster writes than stdlib `shelve` in the same test harness.
 
 ---
 
@@ -91,7 +91,7 @@ db["key"] = MyModel(value="value")
 ```
 ---
 ### with Self Custom Serialization
-To implement your own serialization method, you need to create a subclass of serializer.BaseSerializer and override the following two methods:
+To implement your own serialization method, you need to create a subclass of `serializer.BaseSerializer` and override the following two methods:
 1. `serialize(self, obj) -> bytes`: This method takes a Python object (obj) and returns its serialized form as bytes. Implement this method with your custom serialization logic.
 2. `unserialize(self, data: bytes)`: This method takes the serialized bytes (data) and returns the original Python object by deserializing it.
 

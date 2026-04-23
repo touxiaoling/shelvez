@@ -1,7 +1,7 @@
 from .shelve import open
-from . import serialer
+from . import serializer
 from . import sqlcache
 
-__all__ = ["open", "serialer", "sqlcache"]
+__all__ = ["open", "serializer", "sqlcache"]
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"

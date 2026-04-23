@@ -1,9 +1,7 @@
-import pytest
-
-from shelvez import serialer
+from shelvez import serializer
 
 
-def any_serializer_test(serializer: serialer.BaseSerializer, data, echo=False):
+def any_serializer_test(serializer: serializer.BaseSerializer, data, echo=False):
     serialized_data = serializer.serialize(data)
     if echo:
         print(f"Serialized data: {serialized_data}")
@@ -16,9 +14,9 @@ def test_json_serialization():
     json_data_list = [
         {"key": "value", "key2": "value2"},
     ]
-    serializer = serialer.JsonSerializer()
+    ser = serializer.JsonSerializer()
     for data in json_data_list:
-        any_serializer_test(serializer, data)
+        any_serializer_test(ser, data)
 
 
 def test_pickle_serialization():
@@ -32,9 +30,9 @@ def test_pickle_serialization():
         "hello world",
     ]
 
-    serializer = serialer.PickleSerializer()
+    ser = serializer.PickleSerializer()
     for data in pickle_data_list:
-        any_serializer_test(serializer, data)
+        any_serializer_test(ser, data)
 
 
 def test_pydantic_serialization():
@@ -51,5 +49,5 @@ def test_pydantic_serialization():
         MyModel(key="value3"),
     ]
     for data in data_list:
-        serializer = serialer.PydanticSerializer(MyModel)
-        any_serializer_test(serializer=serializer, data=data, echo=True)
+        ser = serializer.PydanticSerializer(MyModel)
+        any_serializer_test(ser, data=data, echo=True)

@@ -324,6 +324,7 @@ def test_execute_retries_on_database_locked(cache_path: str, monkeypatch):
     db = sqlcache._SqlCacheDatabase(cache_path, multiprocess_safe=True)
     try:
         attempts = {"n": 0}
+        assert db._db._cx is not None
         real_execute = db._db._cx.execute
 
         def flaky(sql, params=()):

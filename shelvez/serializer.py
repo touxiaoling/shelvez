@@ -1,5 +1,4 @@
 from abc import abstractmethod
-from functools import partial
 
 import pydantic
 
@@ -41,7 +40,7 @@ class PickleSerializer(BaseSerializer):
 
 
 class PydanticSerializer(BaseSerializer):
-    def __init__(self, model: pydantic.BaseModel):
+    def __init__(self, model: type[pydantic.BaseModel]):
         self.model = model
 
     def serialize(self, obj: pydantic.BaseModel):

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import random
 import shelve as stdlib_shelve
-from dbm.sqlite3 import open as dbm_sqlite_open
+from dbm.sqlite3 import open as dbm_sqlite_open  # ty: ignore[unresolved-import]
 from pathlib import Path
 
 import pytest
@@ -47,7 +47,7 @@ def test_shelvez_pickle_speed(db_path: str, benchmark):
 
 def test_shelvez_json_speed(db_path: str, benchmark):
     data = _make_payload()
-    db = shelvez.open(db_path, flag="c", serializer=shelvez.serialer.JsonSerializer())
+    db = shelvez.open(db_path, flag="c", serializer=shelvez.serializer.JsonSerializer())
 
     def run():
         for k, v in data.items():
@@ -70,7 +70,7 @@ def test_shelvez_pydantic_speed(db_path: str, benchmark):
     db = shelvez.open(
         db_path,
         flag="c",
-        serializer=shelvez.serialer.PydanticSerializer(model=Item),
+        serializer=shelvez.serializer.PydanticSerializer(model=Item),
     )
 
     def run():
