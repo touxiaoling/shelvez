@@ -12,7 +12,6 @@ from functools import wraps
 from typing import Callable, Any, Optional, Union
 from collections import OrderedDict
 
-from cachetools import TTLCache, LRUCache
 from .sqlite import _Database
 from .serializer import BaseSerializer, PickleSerializer
 
@@ -21,6 +20,76 @@ class SqlCacheError(Exception):
     """SqlCache相关错误"""
 
     pass
+
+
+class _LRUCache:
+    """最小化的 LRU 实现，替代 ``cachetools.LRUCache``。
+
+    只提供热路径用到的 ``in`` / ``[]`` / ``clear`` / ``len`` 语义；底层直接
+    复用 ``OrderedDict`` 的 C 级实现，和 ``cachetools`` 性能基本一致，但免去
+    一个三方依赖。非线程安全——上层调用点本来也没有为内存缓存加锁。
+    """
+
+    __slots__ = ("maxsize", "_data")
+
+    def __init__(self, maxsize: int):
+        self.maxsize = maxsize
+        self._data: OrderedDict = OrderedDict()
+
+    def __contains__(self, key) -> bool:
+        return key in self._data
+
+    def __getitem__(self, key):
+        self._data.move_to_end(key)
+        return self._data[key]
+
+    def __setitem__(self, key, value) -> None:
+        if key in self._data:
+            self._data.move_to_end(key)
+        self._data[key] = value
+        if len(self._data) > self.maxsize:
+            self._data.popitem(last=False)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def clear(self) -> None:
+        self._data.clear()
+
+
+class _TTLCache(_LRUCache):
+    """带绝对过期时间的 LRU，替代 ``cachetools.TTLCache``。
+
+    存储 ``(value, expire_at)`` 元组，``__contains__`` / ``__getitem__`` 做
+    惰性过期（过期即删并视为 miss），超过 ``maxsize`` 时按 LRU 淘汰最旧项。
+    采用 ``time.monotonic`` 避免系统时钟回拨影响过期判断。
+    """
+
+    __slots__ = ("ttl",)
+
+    def __init__(self, maxsize: int, ttl: float):
+        super().__init__(maxsize)
+        self.ttl = ttl
+
+    def __contains__(self, key) -> bool:
+        item = self._data.get(key)
+        if item is None:
+            return False
+        if item[1] < time.monotonic():
+            del self._data[key]
+            return False
+        return True
+
+    def __getitem__(self, key):
+        value, expire_at = self._data[key]
+        if expire_at < time.monotonic():
+            del self._data[key]
+            raise KeyError(key)
+        self._data.move_to_end(key)
+        return value
+
+    def __setitem__(self, key, value) -> None:
+        super().__setitem__(key, (value, time.monotonic() + self.ttl))
 
 
 # 能直接用 ``repr`` 得到稳定、可哈希键的原生类型集合。把常见的标量类型
@@ -327,9 +396,9 @@ class SqlCache:
 
         # 创建内存缓存用于快速访问
         if self.cache_type == "ttl":
-            self._memory_cache = TTLCache(maxsize=max_size, ttl=ttl or 3600)
+            self._memory_cache = _TTLCache(maxsize=max_size, ttl=ttl or 3600)
         else:
-            self._memory_cache = LRUCache(maxsize=max_size)
+            self._memory_cache = _LRUCache(maxsize=max_size)
 
         # GC 兜底：即使用户从不调用 close()，连接也会在 SqlCache 被回收时
         # 随之关闭，避免 sqlite3.Connection 触发 ResourceWarning。

@@ -1,10 +1,11 @@
 from abc import abstractmethod
-
-import pydantic
+from typing import TYPE_CHECKING
 
 import json
-
 import pickle
+
+if TYPE_CHECKING:
+    import pydantic
 
 
 class BaseSerializer:
@@ -40,10 +41,24 @@ class PickleSerializer(BaseSerializer):
 
 
 class PydanticSerializer(BaseSerializer):
-    def __init__(self, model: type[pydantic.BaseModel]):
+    """Pydantic 是可选依赖。
+
+    只有真正构造 ``PydanticSerializer`` 的用户才会触发 ``import pydantic``；
+    ``import shelvez`` 本身不引入 pydantic，这样不用 Pydantic 的用户可以完全
+    不安装它。缺失时给出明确的 ``ImportError`` 并附安装命令。
+    """
+
+    def __init__(self, model: "type[pydantic.BaseModel]"):
+        try:
+            import pydantic  # noqa: F401
+        except ImportError as exc:
+            raise ImportError(
+                "PydanticSerializer requires the optional 'pydantic' package. "
+                "Install it with:  pip install pydantic  (or `pip install shelvez[pydantic]`)."
+            ) from exc
         self.model = model
 
-    def serialize(self, obj: pydantic.BaseModel):
+    def serialize(self, obj: "pydantic.BaseModel"):
         return obj.model_dump_json(exclude_unset=True, indent=None).encode("utf-8")
 
     def unserialize(self, obj: bytes):

@@ -47,6 +47,18 @@ This package functions similarly to Python's built-in `shelve` but offers additi
 pip install shelvez
 ```
 
+### Optional: Pydantic support
+
+`pydantic` is **not** installed by default — `shelvez` itself does not import it, so users who don't need `PydanticSerializer` can keep their dependency tree small. If you want to use `shelvez.serializer.PydanticSerializer`, install pydantic explicitly:
+
+```bash
+pip install shelvez[pydantic]
+# or equivalently:
+pip install pydantic
+```
+
+Instantiating `PydanticSerializer` without `pydantic` installed will raise a clear `ImportError` telling you to run the command above.
+
 ---
 ## Base Usage
 
