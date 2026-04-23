@@ -1,144 +1,134 @@
+"""Functional tests for :mod:`shelvez.shelve`.
+
+Benchmarks live in ``tests/benchmarks/`` and are excluded from the default
+``pytest`` run.
+"""
+
+from __future__ import annotations
+
 import pytest
-import pytest_benchmark
-import tempfile
-from pathlib import Path
+
+import shelvez
 
 
-@pytest.fixture
-def temp_db_path():
-    with tempfile.NamedTemporaryFile(suffix=".db") as temp_file:
-        yield temp_file.name
+def test_basic_pickle_roundtrip(db_path: str):
+    with shelvez.open(db_path, flag="c") as db:
+        db["k1"] = "value1"
+        db["k2"] = 123
+        db["k3"] = {"nested": [1, 2, 3]}
+
+        assert db["k1"] == "value1"
+        assert db["k2"] == 123
+        assert db["k3"] == {"nested": [1, 2, 3]}
 
 
-def test_shelve_default(temp_db_path):
-    import shelvez as shelve
-
-    # Create a test database
-    example_db = {
-        "key1": "value1",
-        "key2": "value2",
-        "key3": 123,
-    }
-    db_path = temp_db_path
-    print(db_path)
-    db = shelve.open(db_path, flag="c")
-
-    for key, value in example_db.items():
-        db[key] = value
-        assert db[key] == value
-
-
-def test_shelve_pydintic(temp_db_path):
-    import shelvez as shelve
+def test_pydantic_serializer(db_path: str):
     from pydantic import BaseModel
 
     class MyModel(BaseModel):
         key: str
         key2: str = "default"
-        key3: int = 0
 
-    # Create a test database
-    example_db = {
-        "key1": MyModel(key="value1"),
-        "key2": MyModel(key="value2", key2="value2"),
-        "key3": MyModel(key="value3"),
-    }
-    db_path = temp_db_path
-    print(db_path)
-    serializer = shelve.serialer.PydanticSerializer(MyModel)
-    db = shelve.open(db_path, flag="c", serializer=serializer)
-
-    for key, value in example_db.items():
-        db[key] = value
-        assert db[key] == value
+    serializer = shelvez.serialer.PydanticSerializer(MyModel)
+    with shelvez.open(db_path, flag="c", serializer=serializer) as db:
+        db["a"] = MyModel(key="v1")
+        db["b"] = MyModel(key="v2", key2="explicit")
+        assert db["a"] == MyModel(key="v1")
+        assert db["b"] == MyModel(key="v2", key2="explicit")
 
 
-def test_shelvez_speed(temp_db_path, benchmark):
-    import random
-    import shelvez
-    from pathlib import Path
+def test_persistence_across_reopen(db_path: str):
+    with shelvez.open(db_path, flag="c") as db:
+        db["persisted"] = {"n": 42}
 
-    example_db = {str(random.randint(1000, 9999)): {"value": str(random.randint(1000000, 9999999))} for i in range(10000)}
+    with shelvez.open(db_path, flag="r") as db:
+        assert db["persisted"] == {"n": 42}
 
-    db = shelvez.open(temp_db_path, flag="c")
 
-    def benchmark_shelvez():
-        for key, value in example_db.items():
-            db[key] = value
-            assert db[key] == value
+def test_len_iter_contains_delete(db_path: str):
+    with shelvez.open(db_path, flag="c") as db:
+        db["a"] = 1
+        db["b"] = 2
+        db["c"] = 3
 
-    benchmark(benchmark_shelvez)
-    db.dict.optimize_database()
+        assert len(db) == 3
+        assert set(iter(db)) == {"a", "b", "c"}
+        assert "b" in db
+
+        del db["b"]
+        assert "b" not in db
+        assert len(db) == 2
+
+
+def test_get_default(db_path: str):
+    with shelvez.open(db_path, flag="c") as db:
+        db["exists"] = "yes"
+        assert db.get("exists") == "yes"
+        assert db.get("missing") is None
+        assert db.get("missing", "fallback") == "fallback"
+
+
+def test_writeback_buffers_mutations(db_path: str):
+    """With ``writeback=True`` in-place mutations of mutable values must be
+    flushed back on :meth:`sync` / :meth:`close`."""
+    with shelvez.open(db_path, flag="c", writeback=True) as db:
+        db["list"] = [1, 2, 3]
+        db["list"].append(4)  # relies on writeback cache
+        db.sync()
+
+    with shelvez.open(db_path, flag="r") as db:
+        assert db["list"] == [1, 2, 3, 4]
+
+
+def test_writeback_populates_cache_on_first_read(db_path: str):
+    """Regression for :file:`shelvez/shelve.py`'s ``__getitem__`` writeback
+    branch: when a key is read from disk for the first time under
+    ``writeback=True``, the deserialized value must be stashed into the
+    in-memory cache so that subsequent in-place mutations are captured on
+    :meth:`sync`.
+
+    The existing ``test_writeback_buffers_mutations`` only exercises the
+    cache-hit-after-set path; this one exercises the cache-miss-then-fill
+    path, which is the actual reason ``writeback`` exists."""
+    # Seed without writeback so the cache starts empty on reopen.
+    with shelvez.open(db_path, flag="c") as db:
+        db["list"] = [1, 2, 3]
+
+    with shelvez.open(db_path, flag="c", writeback=True) as db:
+        assert db.cache == {}
+        value = db["list"]
+        assert value == [1, 2, 3]
+        assert db.cache == {"list": [1, 2, 3]}
+        value.append(4)
+
+    with shelvez.open(db_path, flag="r") as db:
+        assert db["list"] == [1, 2, 3, 4]
+
+
+def test_no_writeback_drops_inplace_mutations(db_path: str):
+    """Sanity check of the complementary case: without writeback, in-place
+    mutations on cached values are *not* persisted."""
+    with shelvez.open(db_path, flag="c", writeback=False) as db:
+        db["list"] = [1, 2, 3]
+        db["list"].append(4)
+
+    with shelvez.open(db_path, flag="r") as db:
+        assert db["list"] == [1, 2, 3]
+
+
+def test_access_after_close_raises(db_path: str):
+    db = shelvez.open(db_path, flag="c")
+    db["k"] = "v"
     db.close()
-    db_size = Path(temp_db_path).stat().st_size / 1024
-    print(f"shelvez pickle Database size: {db_size:.2f} kB")
+
+    with pytest.raises(ValueError):
+        _ = db["k"]
 
 
-def test_shelvez_json_speed(temp_db_path, benchmark):
-    import random
-    import shelvez
-
-    example_db = {str(random.randint(1000, 9999)): {"value": str(random.randint(1000000, 9999999))} for i in range(10000)}
-
-    db = shelvez.open(temp_db_path, flag="c", serializer=shelvez.serialer.JsonSerializer())
-
-    def benchmark_shelvez_json():
-        for key, value in example_db.items():
-            db[key] = value
-            assert db[key] == value
-
-    benchmark(benchmark_shelvez_json)
-    db.dict.optimize_database()
-    db.close()
-    db_size = Path(temp_db_path).stat().st_size / 1024
-    print(f"shelvez json Database size: {db_size:.2f} kB")
-
-
-def test_shelvez_pydintic_speed(temp_db_path, benchmark):
-    import random
-    import shelvez
-    from pydantic import BaseModel
-
-    class MyModel(BaseModel):
-        value: str
-
-    example_db = {
-        str(random.randint(1000, 9999)): MyModel.model_validate({"value": str(random.randint(1000000, 9999999))})
-        for i in range(10000)
-    }
-
-    db = shelvez.open(temp_db_path, flag="c", serializer=shelvez.serialer.PydanticSerializer(model=MyModel))
-
-    def benchmark_shelvez_json():
-        for key, value in example_db.items():
-            db[key] = value
-            assert db[key] == value
-
-    benchmark(benchmark_shelvez_json)
-    db.dict.optimize_database()
-    db.close()
-    db_size = Path(temp_db_path).stat().st_size / 1024
-    print(f"shelvez pydintic Database size: {db_size:.2f} kB")
-
-
-def test_shelve_speed(temp_db_path, benchmark):
-    import random
-    import shelve
-    from dbm.sqlite3 import open
-
-    example_db = {str(random.randint(1000, 9999)): {"value": str(random.randint(1000000, 9999999))} for i in range(10000)}
-
-    db = open(temp_db_path, flag="c")
-    db.close()
-    db = shelve.open(temp_db_path, flag="c")
-
-    def benchmark_shelve():
-        for key, value in example_db.items():
-            db[key] = value
-            assert db[key] == value
-
-    benchmark(benchmark_shelve)
-
-    db.close()
-    db_size = Path(temp_db_path).stat().st_size / 1024
-    print(f"shelve Database size: {db_size:.2f} kB")
+def test_clear(db_path: str):
+    with shelvez.open(db_path, flag="c") as db:
+        db["a"] = 1
+        db["b"] = 2
+        db.clear()
+        assert len(db) == 0
+        assert "a" not in db

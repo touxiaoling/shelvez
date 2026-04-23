@@ -7,7 +7,7 @@ requires-python = ">=3.10"
 dependencies = [
     "cachetools>=6.2.0",
     "pydantic>=2.11.4",
-    "zstandard>=0.23.0",
+    "zstandard>=0.23.0; python_version < '3.14'",
 ]
 
 [build-system]
@@ -33,7 +33,17 @@ dev = [
 
 [tool.ruff]
 line-length = 128
-target-version = "py313"
+target-version = "py314"
 
 [tool.ruff.lint]
 ignore = ["F401"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--ignore=tests/benchmarks"
+markers = [
+    "benchmark: performance benchmarks (excluded from the default run)",
+]
+filterwarnings = [
+    "error::ResourceWarning",
+]

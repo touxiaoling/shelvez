@@ -4,8 +4,10 @@ import time
 import hashlib
 import pickle
 import random
+import threading
+import weakref
 from pathlib import Path
-from contextlib import suppress, closing
+from contextlib import suppress, closing, contextmanager
 from functools import wraps
 from typing import Callable, Any, Optional, Union
 from collections import OrderedDict
@@ -47,26 +49,45 @@ class _SqlCacheDatabase:
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
         self.multiprocess_safe = multiprocess_safe
 
-        # 为多进程环境优化SQLite连接参数
-        sqlite3_kargs = {}
+        # 使用 autocommit=True：否则 Python sqlite3 的隐式事务会把每次
+        # ``set``/``delete`` 写入关在一个从未提交的事务里，导致：
+        #   1) 同进程里第二个连接 ``get`` 看不到数据（读的是已提交快照）；
+        #   2) 第二个连接再写入时撞上第一个连接的写锁，触发 "database is locked"
+        #      并让 busy_timeout 最多各阻塞 30s，单个用例耗时爆炸到分钟级。
+        sqlite3_kargs = {"autocommit": True}
         if multiprocess_safe:
-            sqlite3_kargs = {
-                "check_same_thread": False,
-            }
+            sqlite3_kargs["check_same_thread"] = False
 
         # 使用现有的_Database类来管理SQLite连接
         self._db = _Database(str(self.cache_path), flag="c", mode=0o666, sqlite3_kargs=sqlite3_kargs)
+
+        # 多线程共享同一 sqlite3 连接时必须外部加锁，否则游标生命周期
+        # 会相互踩踏，引发 "bad parameter or other API misuse"。
+        self._lock = threading.RLock()
 
         # 为多进程环境优化PRAGMA设置
         if multiprocess_safe:
             self._optimize_for_multiprocess()
 
-        self._execute(self.BUILD_TABLE)
-        self._execute(self.CREATE_INDEX)
-        self._execute(self.CREATE_ACCESS_INDEX)
+        with self._execute(self.BUILD_TABLE):
+            pass
+        with self._execute(self.CREATE_INDEX):
+            pass
+        with self._execute(self.CREATE_ACCESS_INDEX):
+            pass
 
         # 使用现有的序列化器
         self.serializer = PickleSerializer()
+
+        # 用 weakref.finalize 兜底，确保对象被 GC 时一定会关闭底层 sqlite3
+        # 连接；对热路径零开销（仅在对象被回收时触发一次）。
+        self._finalizer = weakref.finalize(self, self._finalize_db, self._db)
+
+    @staticmethod
+    def _finalize_db(db) -> None:
+        """Finalizer：不能引用 self，否则会阻止 GC。"""
+        with suppress(Exception):
+            db.close()
 
     def _optimize_for_multiprocess(self):
         """为多进程环境优化SQLite设置"""
@@ -83,32 +104,37 @@ class _SqlCacheDatabase:
             # PRAGMA设置失败不影响功能，忽略错误
             pass
 
+    @contextmanager
     def _execute(self, sql: str, params: tuple = ()):
-        """执行SQL语句，带重试机制"""
-        if not self.multiprocess_safe:
-            # 非多进程安全模式，直接执行
-            try:
-                return self._db._execute(sql, params)
-            except Exception as e:
-                raise SqlCacheError(f"数据库操作失败: {e}")
+        """执行 SQL 并返回游标的上下文管理器。
 
-        # 多进程安全模式，带重试机制
-        max_retries = 5
+        - 使用可重入锁包裹，保证多线程下同一 sqlite3 连接的游标串行化。
+        - 锁在 ``with`` 块内一直持有，避免用户正在 ``fetchone`` 时其他线程介入。
+        - 在多进程安全模式下，遇到 ``database is locked`` 时做指数退避重试。
+        """
+        max_retries = 5 if self.multiprocess_safe else 1
         base_delay = 0.1
 
-        for attempt in range(max_retries):
-            try:
-                return self._db._execute(sql, params)
-            except sqlite3.OperationalError as exc:
-                if "database is locked" in str(exc).lower() and attempt < max_retries - 1:
-                    # 指数退避 + 随机抖动
-                    delay = base_delay * (2**attempt) + random.uniform(0, 0.1)
-                    time.sleep(delay)
-                    continue
-                else:
+        with self._lock:
+            for attempt in range(max_retries):
+                try:
+                    cursor = self._db._cx.execute(sql, params)
+                    break
+                except sqlite3.OperationalError as exc:
+                    if self.multiprocess_safe and "database is locked" in str(exc).lower() and attempt < max_retries - 1:
+                        delay = base_delay * (2**attempt) + random.uniform(0, 0.1)
+                        time.sleep(delay)
+                        continue
                     raise SqlCacheError(f"数据库被锁定，可能是多进程同时访问导致的。请稍后重试: {exc}")
-            except Exception as e:
-                raise SqlCacheError(f"数据库操作失败: {e}")
+                except sqlite3.Error as exc:
+                    raise SqlCacheError(f"数据库操作失败: {exc}")
+                except Exception as exc:
+                    raise SqlCacheError(f"数据库操作失败: {exc}")
+
+            try:
+                yield cursor
+            finally:
+                cursor.close()
 
     def _generate_key(self, func_name: str, args: tuple, kwargs: dict) -> str:
         """生成缓存键"""
@@ -131,52 +157,59 @@ class _SqlCacheDatabase:
 
         with self._execute(query, params) as cursor:
             row = cursor.fetchone()
-            if row:
-                # 更新访问信息
-                self._execute(
-                    "UPDATE cache SET access_count = access_count + 1, last_access = ? WHERE key = ?", (current_time, key)
-                )
-                # 解压缩并反序列化
-                compressed_value = row[0]
-                decompressed_value = self._db.compressor.decompress(compressed_value)
-                return self.serializer.unserialize(decompressed_value)
-        return None
+        if row is None:
+            return None
+
+        with self._execute(
+            "UPDATE cache SET access_count = access_count + 1, last_access = ? WHERE key = ?",
+            (current_time, key),
+        ):
+            pass
+
+        compressed_value = row[0]
+        decompressed_value = self._db.compressor.decompress(compressed_value)
+        return self.serializer.unserialize(decompressed_value)
 
     def set(self, key: str, value: Any):
         """设置缓存值"""
         current_time = time.time()
-        # 序列化并压缩
         serialized_value = self.serializer.serialize(value)
         compressed_value = self._db.compressor.compress(serialized_value)
 
-        self._execute(
+        with self._execute(
             "INSERT OR REPLACE INTO cache (key, value, created_at, access_count, last_access) VALUES (?, ?, ?, ?, ?)",
             (key, compressed_value, current_time, 1, current_time),
-        )
+        ):
+            pass
 
     def delete(self, key: str):
         """删除缓存项"""
-        self._execute("DELETE FROM cache WHERE key = ?", (key,))
+        with self._execute("DELETE FROM cache WHERE key = ?", (key,)):
+            pass
 
     def clear(self):
         """清空所有缓存"""
-        self._execute("DELETE FROM cache")
+        with self._execute("DELETE FROM cache"):
+            pass
 
     def cleanup_expired(self, ttl: float):
         """清理过期缓存"""
         current_time = time.time()
-        self._execute("DELETE FROM cache WHERE created_at < ?", (current_time - ttl,))
+        with self._execute("DELETE FROM cache WHERE created_at < ?", (current_time - ttl,)):
+            pass
 
     def cleanup_lru(self, max_size: int):
         """清理LRU缓存，保留最近访问的max_size个"""
-        # 获取当前缓存数量
         with self._execute("SELECT COUNT(*) FROM cache") as cursor:
             count = cursor.fetchone()[0]
 
         if count > max_size:
-            # 删除最久未访问的项
             excess = count - max_size
-            self._execute("DELETE FROM cache WHERE key IN (SELECT key FROM cache ORDER BY last_access ASC LIMIT ?)", (excess,))
+            with self._execute(
+                "DELETE FROM cache WHERE key IN (SELECT key FROM cache ORDER BY last_access ASC LIMIT ?)",
+                (excess,),
+            ):
+                pass
 
     def get_stats(self) -> dict:
         """获取缓存统计信息"""
@@ -185,9 +218,14 @@ class _SqlCacheDatabase:
             return {"total_items": row[0] or 0, "avg_access_count": row[1] or 0, "last_access": row[2] or 0}
 
     def close(self):
-        """关闭数据库连接"""
+        """关闭数据库连接（幂等）。"""
+        # 先撤销 finalizer，避免 GC 时再跑一次
+        finalizer = getattr(self, "_finalizer", None)
+        if finalizer is not None and finalizer.alive:
+            finalizer.detach()
         if hasattr(self, "_db"):
-            self._db.close()
+            with suppress(Exception):
+                self._db.close()
 
 
 class SqlCache:
@@ -228,6 +266,15 @@ class SqlCache:
             self._memory_cache = TTLCache(maxsize=max_size, ttl=ttl or 3600)
         else:
             self._memory_cache = LRUCache(maxsize=max_size)
+
+        # GC 兜底：即使用户从不调用 close()，连接也会在 SqlCache 被回收时
+        # 随之关闭，避免 sqlite3.Connection 触发 ResourceWarning。
+        self._finalizer = weakref.finalize(self, self._finalize_cache, self._db)
+
+    @staticmethod
+    def _finalize_cache(db) -> None:
+        with suppress(Exception):
+            db.close()
 
     def __call__(self, func: Callable) -> Callable:
         """装饰器实现"""
@@ -290,8 +337,18 @@ class SqlCache:
         }
 
     def close(self):
-        """关闭缓存"""
-        self._db.close()
+        """关闭缓存（幂等）。"""
+        finalizer = getattr(self, "_finalizer", None)
+        if finalizer is not None and finalizer.alive:
+            finalizer.detach()
+        if hasattr(self, "_db"):
+            self._db.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
 
 
 # 便捷函数
